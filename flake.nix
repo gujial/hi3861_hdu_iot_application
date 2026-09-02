@@ -94,21 +94,23 @@
         ];
 
         shellHook = ''
-          # 1. 设置编译标志以兼容新版 GCC 与旧代码
+          # 1. 设置编译标志
           export CFLAGS="-Wno-attributes -Wno-cast-function-type -Wno-implicit-function-declaration"
           export CXXFLAGS="-Wno-attributes -Wno-cast-function-type -Wno-implicit-function-declaration"
 
           # 2. hb 是 python 包（无独立可执行文件），设置 PYTHONPATH
-          project_root="$(dirname "$DIRENV_FILE")"
+          project_root="''${DIRENV_FILE:+$(dirname "$DIRENV_FILE")}"
+          if [ -z "$project_root" ]; then
+            project_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+          fi
           hb_module_dir="$project_root/src/build/lite"
           if [ -d "$hb_module_dir/hb" ]; then
             export PYTHONPATH="$hb_module_dir:$PYTHONPATH"
           fi
 
-          # 3. Hi3861 SDK 需要原厂 GCC 7.3 的 soft-float libgcc。
-          if [ -z "''${HI3861_TOOLCHAIN:-}" ]; then
-            echo "错误: 请设置 HI3861_TOOLCHAIN 为 gcc_riscv32-linux-7.3.0 根目录" >&2
-          elif [ ! -x "$HI3861_TOOLCHAIN/bin/riscv32-unknown-elf-gcc" ]; then
+          # 3. Hi3861 SDK 需要原厂 GCC 7.3 的 soft-float libgcc，默认使用仓库内置工具链。
+          export HI3861_TOOLCHAIN="''${HI3861_TOOLCHAIN:-$project_root/toolchains/gcc_riscv32}"
+          if [ ! -x "$HI3861_TOOLCHAIN/bin/riscv32-unknown-elf-gcc" ]; then
             echo "错误: HI3861_TOOLCHAIN 中找不到 riscv32-unknown-elf-gcc: $HI3861_TOOLCHAIN" >&2
           else
             export PATH="$HI3861_TOOLCHAIN/bin:$PATH"
