@@ -1,0 +1,15 @@
+CompileFlags:
+  Add:
+    - "-D__LITEOS_M__"
+    - "-DCHIP_VER_Hi3861"
+    - "-Wno-unknown-warning-option"
+    - "-Isrc/base/iot_hardware/peripheral/interfaces/kits"
+    - "-Isrc/utils/native/lite/include"
+    - "-Isrc/device/hisilicon/hispark_pegasus/sdk_liteos/include"
+    - "-Isrc/device/hisilicon/hispark_pegasus/sdk_liteos/platform/include"
+    - "-Isrc/device/hisilicon/hispark_pegasus/sdk_liteos/platform/os/Huawei_LiteOS/components/cmsis"
+  Remove:
+    - "-mabi=*"
+    - "-march=*"
+    - "-fno-short-enums"
+    - "-fno-builtin-*"
