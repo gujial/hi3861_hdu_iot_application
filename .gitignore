@@ -11,6 +11,8 @@
 src/out/
 **/build_tmp/
 .sconsign.dblite
+src/device/hisilicon/hispark_pegasus/sdk_liteos/output/
+src/device/hisilicon/hispark_pegasus/sdk_liteos/ohos/libs/
 
 # Python
 __pycache__/

@@ -5,7 +5,6 @@
 
   outputs =
     {
-      self,
       nixpkgs,
       ...
     }:
@@ -23,7 +22,6 @@
           inherit pname version;
           sha256 = "0bv249ni511lqwjbg6yrvxnv0h76axfx3wnrflb045sb3cxl2rnc";
         };
-        # Python 3.10+ 移除了 collections.Mapping/MutableMapping 别名
         postPatch = ''
           find . -name '*.py' -exec sed -i \
             -e 's/from collections import Mapping/from collections.abc import Mapping/' \
@@ -45,12 +43,31 @@
           ps.kconfiglib
           ps.pyyaml
           ps.requests
+          ps.pycryptodome
+          (ps.ecdsa.overridePythonAttrs (old: {
+            meta = old.meta // { knownVulnerabilities = [ ]; };
+          }))
           prompt_toolkit_legacy
         ]
       );
 
-      # RISC-V 交叉编译工具链 (Hi3861 目标架构)
-      riscvToolchain = pkgs.pkgsCross.riscv32-embedded.buildPackages.gcc;
+      hb = pkgs.writeShellScriptBin "hb" ''
+        search_dir="$PWD"
+        while [ "$search_dir" != / ]; do
+          if [ -d "$search_dir/src/build/lite/hb" ]; then
+            export PYTHONPATH="$search_dir/src/build/lite''${PYTHONPATH:+:$PYTHONPATH}"
+            exec ${pythonEnv}/bin/python -m hb "$@"
+          fi
+          if [ -d "$search_dir/build/lite/hb" ]; then
+            export PYTHONPATH="$search_dir/build/lite''${PYTHONPATH:+:$PYTHONPATH}"
+            exec ${pythonEnv}/bin/python -m hb "$@"
+          fi
+          search_dir="$(dirname "$search_dir")"
+        done
+
+        echo "hb: cannot locate src/build/lite/hb from $PWD" >&2
+        exit 1
+      '';
     in
     {
       devShells.${system}.default = pkgs.mkShell {
@@ -59,6 +76,7 @@
         packages = [
           # 构建与编译工具
           pythonEnv
+          hb
           pkgs.gn
           pkgs.ninja
           pkgs.scons
@@ -70,55 +88,41 @@
           pkgs.flex
           pkgs.pkg-config
 
-          # RISC-V 工具链
-          riscvToolchain
-
           # LSP 与代码导航工具
           pkgs.clang-tools # clangd 等
           pkgs.bear # 生成 compile_commands.json
         ];
 
         shellHook = ''
-          # 1. 适配 OpenHarmony 对 riscv32-unknown-elf- 工具链前缀的调用
-          mkdir -p .bin
-          for bin in ${riscvToolchain}/bin/riscv32-none-elf-*; do
-            if [ -f "$bin" ]; then
-              target_name="riscv32-unknown-elf-$(basename "$bin" | sed 's/riscv32-none-elf-//')"
-              case "$target_name" in
-                riscv32-unknown-elf-gcc|riscv32-unknown-elf-g++)
-                  # 新版 GCC 对 musl 头文件里 void 返回值加 const 属性报警更严格，
-                  # 而项目以 -Werror 编译，需放宽该项警告以兼容旧头文件
-                  cat > ".bin/$target_name" <<EOF
-#!${pkgs.runtimeShell}
-exec "$bin" -Wno-attributes "\$@"
-EOF
-                  chmod +x ".bin/$target_name"
-                  ;;
-                *)
-                  ln -sf "$bin" ".bin/$target_name"
-                  ;;
-              esac
-            fi
-          done
-          export PATH="$PWD/.bin:$PATH"
+          # 1. 设置编译标志以兼容新版 GCC 与旧代码
+          export CFLAGS="-Wno-attributes -Wno-cast-function-type -Wno-implicit-function-declaration"
+          export CXXFLAGS="-Wno-attributes -Wno-cast-function-type -Wno-implicit-function-declaration"
 
-          # 2. hb 是 python 包（无独立可执行文件），生成 python -m hb 的包装脚本
-          if [ -d "$PWD/src/build/lite/hb" ]; then
-            export PYTHONPATH="$PWD/src/build/lite:$PYTHONPATH"
-            cat > .bin/hb <<EOF
-#!${pkgs.runtimeShell}
-exec ${pythonEnv}/bin/python -m hb "\$@"
-EOF
-            chmod +x .bin/hb
+          # 2. hb 是 python 包（无独立可执行文件），设置 PYTHONPATH
+          project_root="$(dirname "$DIRENV_FILE")"
+          hb_module_dir="$project_root/src/build/lite"
+          if [ -d "$hb_module_dir/hb" ]; then
+            export PYTHONPATH="$hb_module_dir:$PYTHONPATH"
+          fi
+
+          # 3. Hi3861 SDK 需要原厂 GCC 7.3 的 soft-float libgcc。
+          if [ -z "''${HI3861_TOOLCHAIN:-}" ]; then
+            echo "错误: 请设置 HI3861_TOOLCHAIN 为 gcc_riscv32-linux-7.3.0 根目录" >&2
+          elif [ ! -x "$HI3861_TOOLCHAIN/bin/riscv32-unknown-elf-gcc" ]; then
+            echo "错误: HI3861_TOOLCHAIN 中找不到 riscv32-unknown-elf-gcc: $HI3861_TOOLCHAIN" >&2
+          else
+            export PATH="$HI3861_TOOLCHAIN/bin:$PATH"
           fi
 
           echo "=========================================================="
           echo "  Hi3861 OpenHarmony 开发与构建环境已就绪 (Nix DevShell)"
-          echo "  - 编译器: riscv32-unknown-elf-gcc (由 Nix riscv32-none-elf 适配)"
+          echo "  - 编译器: riscv32-unknown-elf-gcc (HI3861 原厂 GCC 7.3)"
           echo "  - 构建工具: GN, Ninja, SCons, Python (hb)"
           echo "  - 语言服务: clangd, bear"
+          echo "  - 编译标志: CFLAGS='$CFLAGS' CXXFLAGS='$CXXFLAGS'"
           echo "=========================================================="
         '';
       };
+
     };
 }
