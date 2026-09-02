@@ -1,9 +1,0 @@
-{
-  "root_path": "/home/hispark/src",
-  "board": "hispark_pegasus",
-  "kernel": "liteos_m",
-  "product": "wifiiot_hispark_pegasus",
-  "product_path": "/home/hispark/src/vendor/hisilicon/hispark_pegasus",
-  "device_path": "/home/hispark/src/device/hisilicon/hispark_pegasus/sdk_liteos",
-  "patch_cache": null
-}
