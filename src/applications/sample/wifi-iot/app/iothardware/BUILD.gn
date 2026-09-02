@@ -11,9 +11,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-static_library("led_example") {
+static_library("button_example") {
     sources = [
-        "led_example.c"
+        "button_example.c",
     ]
 
     include_dirs = [

@@ -15,6 +15,6 @@ import("//build/lite/config/component/lite_component.gni")
 
 lite_component("app") {
     features = [
-        "iothardware:led_example",
+        "iothardware:button_example",
     ]
 }
