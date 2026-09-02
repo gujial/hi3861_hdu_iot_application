@@ -77,16 +77,8 @@
           # 构建与编译工具
           pythonEnv
           hb
-          pkgs.gn
-          pkgs.ninja
           pkgs.scons
-          pkgs.cmake
           pkgs.gnumake
-          pkgs.gcc
-          pkgs.perl
-          pkgs.bison
-          pkgs.flex
-          pkgs.pkg-config
 
           # LSP 与代码导航工具
           pkgs.clang-tools # clangd 等
