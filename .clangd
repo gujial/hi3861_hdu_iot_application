@@ -11,5 +11,13 @@ CompileFlags:
   Remove:
     - "-mabi=*"
     - "-march=*"
+    - "-mtune=*"
+    - "-mno-small-data-limit=*"
     - "-fno-short-enums"
     - "-fno-builtin-*"
+    - "-fno-optimize-strlen"
+    - "-freorder-blocks-algorithm=*"
+    - "-fno-aggressive-loop-optimizations"
+    - "-fno-schedule-insns"
+    - "-fno-inline-small-functions"
+    - "-fno-inline-functions-called-once"
