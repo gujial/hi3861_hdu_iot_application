@@ -10,7 +10,7 @@
 
 **编译到开发板：**
 
-1. 本案例的源代码已经部署到 `third_party/paho.mqtt.embedded-c`目录下；
+1. 克隆本项目到 HarmonyOS 源码中，例如 `third_party/paho.mqtt.embedded-c`；
 2. 在产品 json 文件中添加组件依赖，例如在`applications`下添加一行：`{ "name": "mqtt", "dir": "//third_party/paho.mqtt.embedded-c:app", "features":[] }`；
 3. 使用 HarmonyOS 的 build.py 脚本进行编译；
 

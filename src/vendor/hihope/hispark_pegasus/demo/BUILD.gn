@@ -27,7 +27,7 @@ lite_component("demo") {
 #   "09_adc:adc_demo",
 #   "10_i2caht20:app",
 #   "11_uart:uart_demo",
-    "12_ssd1306:app",
+#   "12_ssd1306:app",
 #   "13_oledplayer:app",
 #   "14_pwmbeer:pwm_beer_demo",
 #   "15_pwmbeermusic:beeper_music_demo",
@@ -41,7 +41,7 @@ lite_component("demo") {
 #   "23_udpclient:net_demo",
 #   "24_udpserver:net_demo",
 #   "25_sntp:app",
-#   "26_paho.mqtt.embedded-c:app",
+    "26_paho.mqtt.embedded-c:app",
 #   "27_httpd:app",
 #   "28_easy_wifi:app",
   ]

@@ -12,6 +12,7 @@ src/out/
 .sconsign.dblite
 src/device/hisilicon/hispark_pegasus/sdk_liteos/output/
 src/device/hisilicon/hispark_pegasus/sdk_liteos/ohos/libs/
+src/vendor/hihope/hispark_pegasus/demo/26_paho.mqtt.embedded-c/build/
 
 # Python
 __pycache__/

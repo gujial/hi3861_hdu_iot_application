@@ -1,16 +1,29 @@
 {
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05";
+    nixpkgs-cmake.url = "github:NixOS/nixpkgs/nixos-24.11";
   };
 
   outputs =
     {
       nixpkgs,
+      nixpkgs-cmake,
       ...
     }:
     let
       system = "x86_64-linux";
       pkgs = nixpkgs.legacyPackages.${system};
+      # CMake 3 保留 Paho 所需的旧策略兼容；隔离 nix-ld 的系统库路径。
+      cmakeLegacy = pkgs.symlinkJoin {
+        name = "cmake-legacy-3.30.5";
+        paths = [ nixpkgs-cmake.legacyPackages.${system}.cmake ];
+        nativeBuildInputs = [ pkgs.makeWrapper ];
+        postBuild = ''
+          for tool in cmake ctest cpack; do
+            wrapProgram "$out/bin/$tool" --unset LD_LIBRARY_PATH
+          done
+        '';
+      };
 
       # hb 硬编码依赖 prompt_toolkit==1.0.14 (使用了已在新版本移除的 style_from_dict API)
       prompt_toolkit_legacy = pkgs.python3Packages.buildPythonPackage rec {
@@ -36,20 +49,20 @@
       };
 
       # Python 环境及 OpenHarmony hb 构建工具所需依赖
-      pythonEnv = pkgs.python3.withPackages (
-        ps: [
-          ps.setuptools
-          ps.pip
-          ps.kconfiglib
-          ps.pyyaml
-          ps.requests
-          ps.pycryptodome
-          (ps.ecdsa.overridePythonAttrs (old: {
-            meta = old.meta // { knownVulnerabilities = [ ]; };
-          }))
-          prompt_toolkit_legacy
-        ]
-      );
+      pythonEnv = pkgs.python3.withPackages (ps: [
+        ps.setuptools
+        ps.pip
+        ps.kconfiglib
+        ps.pyyaml
+        ps.requests
+        ps.pycryptodome
+        (ps.ecdsa.overridePythonAttrs (old: {
+          meta = old.meta // {
+            knownVulnerabilities = [ ];
+          };
+        }))
+        prompt_toolkit_legacy
+      ]);
 
       hb = pkgs.writeShellScriptBin "hb" ''
         search_dir="$PWD"
@@ -79,6 +92,7 @@
           hb
           pkgs.scons
           pkgs.gnumake
+          cmakeLegacy
 
           # LSP 与代码导航工具
           pkgs.clang-tools # clangd 等
@@ -111,7 +125,7 @@
           echo "=========================================================="
           echo "  Hi3861 OpenHarmony 开发与构建环境已就绪 (Nix DevShell)"
           echo "  - 编译器: riscv32-unknown-elf-gcc (HI3861 原厂 GCC 7.3)"
-          echo "  - 构建工具: GN, Ninja, SCons, Python (hb)"
+          echo "  - 构建工具: GN, Ninja, SCons, CMake 3, Python (hb)"
           echo "  - 语言服务: clangd, bear"
           echo "  - 编译标志: CFLAGS='$CFLAGS' CXXFLAGS='$CXXFLAGS'"
           echo "=========================================================="
