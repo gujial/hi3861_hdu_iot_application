@@ -27,6 +27,7 @@ Thumbs.db
 # 编辑器/IDE
 .vscode/
 .idea/
+.codex-ppt/
 
 src/ohos_config.json
 result
