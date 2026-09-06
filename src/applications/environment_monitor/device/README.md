@@ -1,0 +1,13 @@
+# Hi3861 环境监测设备应用
+
+这是 `environment_monitor` 正式应用的设备端，面向 HiHope HiSpark Pegasus。应用持续采集 AHT20 温湿度与 MQ-2 模拟电阻值，在 SSD1306 OLED 显示数据，并通过蜂鸣器提供本地温湿度报警。启用云端功能后，设备通过 MQTTS 将有效数据上报至华为云 IoTDA。
+
+硬件连接：
+
+- 蜂鸣器：GPIO 9 / PWM0
+- MQ-2：GPIO 11 / ADC5
+- AHT20 与 SSD1306：GPIO 13、14 / I2C0
+
+正式构建入口为 `//applications/environment_monitor:environment_monitor`，已由 `//applications/sample/wifi-iot/app:app` 引用。设备库目标为 `//applications/environment_monitor/device:environment_monitor_device`。
+
+云端配置由 `tools/configure_device.py` 生成到本目录的 `environment_config.h`。该文件包含本机 Wi-Fi 和设备凭据，已被 Git 忽略。完整的华为云产品模型、Web 后端、编译、烧录和 ntfy 配置说明见 [环境观测站](../web/README.md)。

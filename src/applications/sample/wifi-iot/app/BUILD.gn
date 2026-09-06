@@ -16,7 +16,6 @@ import("//build/lite/config/component/lite_component.gni")
 lite_component("app") {
     features = [
         "startup",
-        "//vendor/hihope/hispark_pegasus/demo:demo",
-        # "iothardware:button_example",
+        "//applications/environment_monitor:environment_monitor",
     ]
 }

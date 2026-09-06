@@ -32,3 +32,11 @@ src/ohos_config.json
 result
 .bin
 .cache
+
+# Environment monitor local credentials and database
+src/applications/environment_monitor/device/tools/device.env
+src/applications/environment_monitor/device/environment_config.h
+src/applications/environment_monitor/web/.env*
+!src/applications/environment_monitor/web/.env.example
+src/applications/environment_monitor/web/data/
+src/applications/environment_monitor/web/node_modules/
