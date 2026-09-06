@@ -46,7 +46,6 @@
    #   "15_pwmbeermusic:beeper_music_demo",
    #   "16_trafficlight:traffic_light_demo",
    #   "17_colorfullight:colorful_light_demo",
-   #   "18_environment:environment",
    #   "19_wificonnect:wifi_demo",
    #   "20_wifihotspot:wifi_demo",
    #   "21_tcpclient:net_demo",
