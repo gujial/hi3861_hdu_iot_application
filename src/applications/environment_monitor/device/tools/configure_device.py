@@ -57,6 +57,31 @@ def generate(environ=os.environ, target=None):
         MQTT_CA_PEM=ca,
         NTP_SERVER=environ.get("ENV_NTP_SERVER", "pool.ntp.org"),
     )
+    local_limits = {
+        "LOCAL_TEMP_LOW": (-50.0, 150.0, "0"),
+        "LOCAL_TEMP_HIGH": (-50.0, 150.0, "35"),
+        "LOCAL_HUMIDITY_LOW": (0.0, 100.0, "20"),
+        "LOCAL_HUMIDITY_HIGH": (0.0, 100.0, "50"),
+        "LOCAL_GAS_LOW": (0.0, 1000000.0, "0"),
+        "LOCAL_GAS_HIGH": (0.0, 1000000.0, "100"),
+    }
+    parsed_limits = {}
+    for name, (minimum, maximum, default) in local_limits.items():
+        try:
+            value = float(environ.get("ENV_" + name, default))
+        except ValueError as error:
+            raise SystemExit("ENV_" + name + " must be numeric") from error
+        if not minimum <= value <= maximum:
+            raise SystemExit("ENV_" + name + " is outside the sensor range")
+        parsed_limits[name] = value
+    for prefix in ("TEMP", "HUMIDITY", "GAS"):
+        if parsed_limits["LOCAL_" + prefix + "_LOW"] >= parsed_limits["LOCAL_" + prefix + "_HIGH"]:
+            raise SystemExit("ENV_LOCAL_" + prefix + "_LOW must be below HIGH")
+    gas_enabled = environ.get("ENV_LOCAL_GAS_ALARM_ENABLED", "0")
+    if gas_enabled not in ("0", "1"):
+        raise SystemExit("ENV_LOCAL_GAS_ALARM_ENABLED must be 0 or 1")
+    values.update(parsed_limits)
+    values["LOCAL_GAS_ALARM_ENABLED"] = int(gas_enabled)
     target = target or Path(__file__).resolve().parents[1] / "environment_config.h"
     interval = int(environ.get("ENV_REPORT_INTERVAL_SECONDS", "30"))
     if not 10 <= interval <= 3600:

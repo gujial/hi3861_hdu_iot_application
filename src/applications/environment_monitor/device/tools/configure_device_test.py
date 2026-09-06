@@ -1,9 +1,11 @@
 import contextlib
 import io
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 from configure_device import generate
 
 
@@ -79,6 +81,25 @@ class ConfigureDeviceTest(unittest.TestCase):
         bad_ca.write_text("not a certificate")
         with self.assertRaisesRegex(SystemExit, "PEM certificate"):
             self.run_generate({"ENV_MQTT_CA_FILE": str(bad_ca)})
+
+    def test_generates_local_alarm_limits(self):
+        header = self.run_generate(
+            {
+                "ENV_LOCAL_GAS_ALARM_ENABLED": "1",
+                "ENV_LOCAL_GAS_LOW": "5",
+                "ENV_LOCAL_GAS_HIGH": "50",
+            }
+        )
+        self.assertIn("#define ENV_LOCAL_GAS_ALARM_ENABLED 1", header)
+        self.assertIn("#define ENV_LOCAL_GAS_LOW 5.0", header)
+
+    def test_rejects_invalid_local_alarm_limits(self):
+        with self.assertRaisesRegex(SystemExit, "LOW must be below HIGH"):
+            self.run_generate(
+                {"ENV_LOCAL_TEMP_LOW": "40", "ENV_LOCAL_TEMP_HIGH": "35"}
+            )
+        with self.assertRaisesRegex(SystemExit, "must be 0 or 1"):
+            self.run_generate({"ENV_LOCAL_GAS_ALARM_ENABLED": "yes"})
 
 
 if __name__ == "__main__":

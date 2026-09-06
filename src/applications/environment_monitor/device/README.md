@@ -12,6 +12,8 @@
 
 云端配置由 `tools/configure_device.py` 生成到本目录的 `environment_config.h`。该文件包含本机 Wi-Fi 和设备凭据，已被 Git 忽略。完整的华为云产品模型、Web 后端、编译、烧录和 ntfy 配置说明见 [环境观测站](../web/README.md)。
 
+本地温湿度报警阈值也由 `device.env` 配置。MQ-2 本地蜂鸣报警默认关闭；完成充分预热和实际模块标定后，设置 `ENV_LOCAL_GAS_LOW`、`ENV_LOCAL_GAS_HIGH`，再将 `ENV_LOCAL_GAS_ALARM_ENABLED` 设为 `1`。燃气报警使用连续三短声，温湿度报警使用单次长声。重新生成配置、编译并烧录后生效。
+
 配置生成器测试使用临时目录和占位凭据，不会读取或覆盖本机的 `device.env`：
 
 ```sh
