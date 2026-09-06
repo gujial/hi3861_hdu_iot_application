@@ -81,12 +81,16 @@ export class Cloud {
       humidity: e.IOTDA_HUMIDITY_PROPERTY || 'humidity',
       gas_resistance: e.IOTDA_GAS_PROPERTY || 'gas_resistance',
     };
-    return {
-      stamp: parseTime(service.reported.event_time),
-      data: Object.fromEntries(
-        Object.entries(mapping).map(([key, name]) => [key, properties[name]]),
-      ),
-    };
+    const stamp = parseTime(service.reported.event_time);
+    if (!Number.isFinite(stamp)) throw new Error('华为云上报时间无效');
+    const data = Object.fromEntries(
+      Object.entries(mapping).map(([key, name]) => [key, properties[name]]),
+    );
+    for (const [key, value] of Object.entries(data)) {
+      if (typeof value !== 'number' || !Number.isFinite(value))
+        throw new Error(`华为云属性 ${mapping[key]} 缺失或无效`);
+    }
+    return { stamp, data };
   }
 }
 export async function notify(env, alert, request = fetch) {

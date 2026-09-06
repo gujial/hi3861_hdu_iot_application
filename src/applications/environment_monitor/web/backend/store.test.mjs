@@ -39,10 +39,10 @@ test('stale readings cannot alarm; invalid threshold edits are atomic', () => {
 });
 test('thresholds, alarm state and notification retries survive restart', () => {
   const dir = mkdtempSync(join(tmpdir(), 'environment-test-')),
-    path = join(dir, 'db');
+    path = join(dir, 'db'),
+    now = Date.now();
   try {
-    let s = new Store(path),
-      now = Date.now();
+    let s = new Store(path);
     s.ingest(sample(40), now, 60, now);
     const first = s.pending();
     s.failed(first, now);
@@ -124,6 +124,92 @@ test('ntfy sends UTF-8 JSON and propagates failed delivery', async () => {
     /503/,
   );
   assert.equal(await notify({}, alert), false);
+});
+
+test('threshold boundary is normal and a future reading is rejected', () => {
+  const s = new Store(),
+    now = Date.now();
+  s.ingest(sample(35), now, 60, now);
+  assert.equal(s.snapshot(60).alerts.length, 0);
+  s.ingest(sample(35.01), now + 1, 60, now + 1);
+  assert.equal(s.snapshot(60).states.temperature, 'high');
+  assert.throws(
+    () => s.ingest(sample(20), now + 60001, 60, now),
+    /时间无效/,
+  );
+  s.close();
+});
+
+test('IAM token is cached and an IoTDA 401 invalidates it', async () => {
+  let authCalls = 0,
+    shadowCalls = 0;
+  const cloud = new Cloud(
+    {
+      IAM_USERNAME: 'user',
+      IAM_PASSWORD: 'password',
+      IAM_DOMAIN: 'domain',
+      IOTDA_ENDPOINT: 'https://iot.example',
+      IOTDA_PROJECT_ID: 'project',
+      IOTDA_DEVICE_ID: 'device',
+    },
+    async (url) => {
+      if (url.includes('/v3/auth/tokens')) {
+        authCalls++;
+        return new Response(
+          JSON.stringify({
+            token: { expires_at: new Date(Date.now() + 3600000).toISOString() },
+          }),
+          { headers: { 'x-subject-token': `token-${authCalls}` } },
+        );
+      }
+      shadowCalls++;
+      if (shadowCalls === 2) return new Response('', { status: 401 });
+      return Response.json({
+        shadow: [
+          {
+            service_id: 'Environment',
+            reported: {
+              event_time: '20260906T010203Z',
+              properties: sample(21),
+            },
+          },
+        ],
+      });
+    },
+  );
+  await cloud.read();
+  await assert.rejects(cloud.read(), /HTTP 401/);
+  await cloud.read();
+  assert.equal(authCalls, 2);
+});
+
+test('cloud rejects missing properties and invalid report time', async () => {
+  const response = (reported) =>
+    async () =>
+      Response.json({ shadow: [{ service_id: 'Environment', reported }] });
+  const env = {
+    IOTDA_AUTH_TOKEN: 'test',
+    IOTDA_ENDPOINT: 'https://iot.example',
+    IOTDA_PROJECT_ID: 'project',
+    IOTDA_DEVICE_ID: 'device',
+  };
+  await assert.rejects(
+    new Cloud(
+      env,
+      response({
+        event_time: '20260906T010203Z',
+        properties: { temperature: 20, humidity: 40 },
+      }),
+    ).read(),
+    /gas_resistance 缺失或无效/,
+  );
+  await assert.rejects(
+    new Cloud(
+      env,
+      response({ event_time: 'invalid', properties: sample(20) }),
+    ).read(),
+    /上报时间无效/,
+  );
 });
 
 test('a recovery cannot overtake a notification awaiting retry', () => {

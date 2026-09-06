@@ -11,3 +11,10 @@
 正式构建入口为 `//applications/environment_monitor:environment_monitor`，已由 `//applications/sample/wifi-iot/app:app` 引用。设备库目标为 `//applications/environment_monitor/device:environment_monitor_device`。
 
 云端配置由 `tools/configure_device.py` 生成到本目录的 `environment_config.h`。该文件包含本机 Wi-Fi 和设备凭据，已被 Git 忽略。完整的华为云产品模型、Web 后端、编译、烧录和 ntfy 配置说明见 [环境观测站](../web/README.md)。
+
+配置生成器测试使用临时目录和占位凭据，不会读取或覆盖本机的 `device.env`：
+
+```sh
+cd src/applications/environment_monitor/device/tools
+python3 -m unittest -v configure_device_test.py
+```

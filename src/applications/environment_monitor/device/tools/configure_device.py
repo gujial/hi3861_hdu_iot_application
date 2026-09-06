@@ -7,7 +7,7 @@ import re
 from pathlib import Path
 
 
-def main():
+def generate(environ=os.environ, target=None):
     names = [
         "WIFI_SSID",
         "WIFI_PASSWORD",
@@ -17,19 +17,33 @@ def main():
         "MQTT_URI",
         "MQTT_CA_FILE",
     ]
-    values = {name: os.environ.get("ENV_" + name, "") for name in names}
+    values = {name: environ.get("ENV_" + name, "") for name in names}
     missing = [name for name, value in values.items() if not value]
     if missing:
         raise SystemExit(
             "Missing environment variables: " + ", ".join("ENV_" + n for n in missing)
         )
-    if not values["MQTT_URI"].startswith("ssl://"):
+    if not re.fullmatch(r"ssl://[^/:\s]+:8883", values["MQTT_URI"]):
         raise SystemExit("ENV_MQTT_URI must use ssl://host:8883")
-    service = os.environ.get("ENV_SERVICE_ID", "Environment")
+    service = environ.get("ENV_SERVICE_ID", "Environment")
     if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", service):
         raise SystemExit("Invalid ENV_SERVICE_ID")
     if not re.fullmatch(r"[A-Za-z0-9_-]+", values["DEVICE_ID"]):
         raise SystemExit("Invalid ENV_DEVICE_ID")
+    client_match = re.fullmatch(
+        re.escape(values["DEVICE_ID"]) + r"_0_[01]_(\d{10})",
+        values["MQTT_CLIENT_ID"],
+    )
+    if not client_match:
+        raise SystemExit(
+            "ENV_MQTT_CLIENT_ID must match ENV_DEVICE_ID_0_<0|1>_YYYYMMDDHH"
+        )
+    try:
+        __import__("datetime").datetime.strptime(client_match.group(1), "%Y%m%d%H")
+    except ValueError as error:
+        raise SystemExit("ENV_MQTT_CLIENT_ID contains an invalid UTC timestamp") from error
+    if not re.fullmatch(r"[0-9a-fA-F]{64}", values["MQTT_PASSWORD"]):
+        raise SystemExit("ENV_MQTT_PASSWORD must be a 64-character hexadecimal HMAC")
     if (
         len(values["WIFI_SSID"].encode()) > 32
         or len(values["WIFI_PASSWORD"].encode()) > 64
@@ -41,10 +55,10 @@ def main():
     values.update(
         SERVICE_ID=service,
         MQTT_CA_PEM=ca,
-        NTP_SERVER=os.environ.get("ENV_NTP_SERVER", "pool.ntp.org"),
+        NTP_SERVER=environ.get("ENV_NTP_SERVER", "pool.ntp.org"),
     )
-    target = Path(__file__).resolve().parents[1] / "environment_config.h"
-    interval = int(os.environ.get("ENV_REPORT_INTERVAL_SECONDS", "30"))
+    target = target or Path(__file__).resolve().parents[1] / "environment_config.h"
+    interval = int(environ.get("ENV_REPORT_INTERVAL_SECONDS", "30"))
     if not 10 <= interval <= 3600:
         raise SystemExit("ENV_REPORT_INTERVAL_SECONDS must be 10..3600")
     target.write_text(
@@ -60,6 +74,10 @@ def main():
     )
     target.chmod(0o600)
     print("Device configuration generated. Values omitted.")
+
+
+def main():
+    generate()
 
 
 if __name__ == "__main__":
