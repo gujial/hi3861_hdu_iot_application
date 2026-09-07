@@ -29,6 +29,7 @@ type Status = {
   pending: number;
   cloudStatus: string;
   notificationStatus: string;
+  thresholdSyncStatus: string;
   device: string;
 };
 const fields = [
@@ -72,7 +73,9 @@ export default function Home() {
         Authorization: `Bearer ${token}`,
         'Content-Type': 'application/json',
       },
-      signal: AbortSignal.timeout(10000),
+      signal: AbortSignal.timeout(
+        path === '/api/thresholds' && options.method === 'PUT' ? 30000 : 10000,
+      ),
     });
     const text = await response.text();
     let body: (Status & { error?: string }) | null = null;
@@ -123,7 +126,7 @@ export default function Home() {
         method: 'PUT',
         body: JSON.stringify(rules),
       });
-      setMessage('阈值已保存，后端持续监测中');
+      setMessage('阈值已下发，设备确认后已保存');
     } catch (e) {
       setMessage(e instanceof Error ? e.message : '保存失败');
     } finally {
@@ -327,6 +330,7 @@ export default function Home() {
                 报警阈值
               </h2>
               <p>超出范围触发通知，恢复缓冲可减少边界反复报警</p>
+              <p>{status?.thresholdSyncStatus || '尚未下发设备阈值'}</p>
             </div>
           </div>
           {rules ? (

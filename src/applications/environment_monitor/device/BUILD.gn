@@ -26,6 +26,7 @@ static_library("environment_monitor_device") {
     if (environment_cloud_enabled) {
         sources += [ "environment_cloud.c", "environment_time.c" ]
         defines = [ "ENVIRONMENT_CLOUD_ENABLED" ]
+        deps = [ "//build/lite/config/component/cJSON:cjson_static" ]
     }
     include_dirs = [
         "//foundation/communication/wifi_lite/interfaces/wifiservice",
@@ -33,6 +34,7 @@ static_library("environment_monitor_device") {
         "//utils/native/lite/include",
         "//kernel/liteos_m/kal",
         "//base/iot_hardware/peripheral/interfaces/kits",
-        "//device/hisilicon/hispark_pegasus/sdk_liteos/include"
+        "//device/hisilicon/hispark_pegasus/sdk_liteos/include",
+        "//third_party/cJSON",
     ]
 }

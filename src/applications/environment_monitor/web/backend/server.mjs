@@ -3,7 +3,7 @@ import { timingSafeEqual } from 'node:crypto';
 import { mkdirSync, existsSync, readFileSync } from 'node:fs';
 import { resolve, extname, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { Store } from './store.mjs';
+import { Store, validateThresholds } from './store.mjs';
 import { Cloud, notify } from './cloud.mjs';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 if (existsSync(resolve(root, '.env')))
@@ -35,6 +35,7 @@ mkdirSync(dirname(dbPath), { recursive: true, mode: 0o700 });
 const store = new Store(dbPath);
 const cloud = new Cloud(env);
 let cloudStatus = '等待首次读取',
+  thresholdSyncStatus = '尚未下发设备阈值',
   notificationStatus =
     env.NTFY_URL && env.NTFY_TOPIC ? '就绪' : '尚未配置 ntfy';
 let stopping = false;
@@ -93,13 +94,22 @@ const server = http.createServer(async (req, res) => {
         return json(res, 200, {
           ...store.snapshot(stale),
           cloudStatus,
+          thresholdSyncStatus,
           notificationStatus,
           device: env.IOTDA_DEVICE_ID || '尚未配置设备',
           staleSeconds: stale,
         });
       if (path === '/api/thresholds' && req.method === 'PUT') {
-        store.saveThresholds(await body(req), stale);
-        return json(res, 200, { ok: true });
+        const rules = validateThresholds(await body(req));
+        try {
+          const result = await cloud.setThresholds(rules);
+          store.saveThresholds(rules, stale);
+          thresholdSyncStatus = `设备已确认（命令 ${result.command_id || '无编号'}）`;
+          return json(res, 200, { ok: true, thresholdSyncStatus });
+        } catch (error) {
+          thresholdSyncStatus = error.message;
+          throw error;
+        }
       }
       return json(res, 404, { error: '接口不存在' });
     } catch (error) {

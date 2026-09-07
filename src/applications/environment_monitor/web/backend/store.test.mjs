@@ -221,3 +221,44 @@ test('a recovery cannot overtake a notification awaiting retry', () => {
   assert.equal(s.pending(now + 6000).state, 'high');
   s.close();
 });
+
+test('web threshold rules are sent as an acknowledged IoTDA command', async () => {
+  const rules = {
+    temperature: { enabled: true, low: 5, high: 32, hysteresis: 0.5 },
+    humidity: { enabled: true, low: 30, high: 70, hysteresis: 2 },
+    gas_resistance: { enabled: false, low: 1, high: 80, hysteresis: 1 },
+  };
+  const cloud = new Cloud(
+    {
+      IOTDA_AUTH_TOKEN: 'test',
+      IOTDA_ENDPOINT: 'https://iot.example',
+      IOTDA_PROJECT_ID: 'project',
+      IOTDA_DEVICE_ID: 'device',
+      IOTDA_INSTANCE_ID: 'instance',
+    },
+    async (url, options) => {
+      assert.match(url, /\/devices\/device\/commands$/);
+      assert.equal(options.method, 'POST');
+      assert.equal(options.headers['Instance-Id'], 'instance');
+      const command = JSON.parse(options.body);
+      assert.equal(command.service_id, 'Environment');
+      assert.equal(command.command_name, 'SetThresholds');
+      assert.deepEqual(command.paras, {
+        temperature_enabled: true,
+        temperature_low: 5,
+        temperature_high: 32,
+        humidity_enabled: true,
+        humidity_low: 30,
+        humidity_high: 70,
+        gas_enabled: false,
+        gas_low: 1,
+        gas_high: 80,
+      });
+      return Response.json({
+        command_id: 'command-1',
+        response: { result_code: 0 },
+      });
+    },
+  );
+  assert.equal((await cloud.setThresholds(rules)).command_id, 'command-1');
+});

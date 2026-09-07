@@ -33,8 +33,8 @@
 #include "hi_adc.h"
 #include "securec.h"
 #include <math.h>
-#ifdef ENVIRONMENT_CLOUD_ENABLED
 #include "environment_cloud.h"
+#ifdef ENVIRONMENT_CLOUD_ENABLED
 #include "environment_config.h"
 #else
 #define ENV_LOCAL_TEMP_LOW 0.0f
@@ -52,7 +52,7 @@
 
 #define MS_PER_S 1000
 
-#define BEEP_TIMES 3
+#define BEEP_TIMES 0
 #define BEEP_DURATION 100
 #define BEEP_PWM_DUTY 50
 #define BEEP_PWM_FREQ 4000
@@ -213,13 +213,26 @@ static void EnvironmentMonitorTask(void *argument) {
     }
     OledShowString(0, IDX_3, line, 1);
 
-    int temperatureAlarm =
-        temperature > ENV_LOCAL_TEMP_HIGH || temperature < ENV_LOCAL_TEMP_LOW;
-    int humidityAlarm =
-        humidity < ENV_LOCAL_HUMIDITY_LOW || humidity > ENV_LOCAL_HUMIDITY_HIGH;
-    int gasAlarm = ENV_LOCAL_GAS_ALARM_ENABLED && gasValid &&
-                   (gasSensorResistance < ENV_LOCAL_GAS_LOW ||
-                    gasSensorResistance > ENV_LOCAL_GAS_HIGH);
+#ifdef ENVIRONMENT_CLOUD_ENABLED
+    EnvironmentThresholds thresholds;
+    EnvironmentCloudGetThresholds(&thresholds);
+#else
+    EnvironmentThresholds thresholds = {
+        ENV_LOCAL_TEMP_LOW, ENV_LOCAL_TEMP_HIGH,
+        ENV_LOCAL_HUMIDITY_LOW, ENV_LOCAL_HUMIDITY_HIGH,
+        ENV_LOCAL_GAS_LOW, ENV_LOCAL_GAS_HIGH, 1, 1,
+        ENV_LOCAL_GAS_ALARM_ENABLED
+    };
+#endif
+    int temperatureAlarm = thresholds.temperatureEnabled &&
+        (temperature > thresholds.temperatureHigh ||
+         temperature < thresholds.temperatureLow);
+    int humidityAlarm = thresholds.humidityEnabled &&
+        (humidity < thresholds.humidityLow ||
+         humidity > thresholds.humidityHigh);
+    int gasAlarm = thresholds.gasEnabled && gasValid &&
+                   (gasSensorResistance < thresholds.gasLow ||
+                    gasSensorResistance > thresholds.gasHigh);
     if (gasAlarm) {
       OledShowString(0, IDX_5, "GAS WARNING!!!  ", 1);
       if (temperatureAlarm || humidityAlarm)

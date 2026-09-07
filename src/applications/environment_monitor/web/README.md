@@ -10,7 +10,7 @@
 
 阈值包含下限、上限和恢复缓冲。例如温度上限为 35°C、缓冲为 0.5°C：超过 35°C 报警，降到 34.5°C 才恢复。每次状态变化记录一次通知，持续超限不反复推送。失败的通知按顺序重试，数据库保留待发通知及告警状态，重启不会重复创建同一报警。网络超时可能导致 ntfy 已接收但本地未确认，此时重试可能重复发送，消息附带事件编号便于识别。
 
-燃气传感器的值是 **kΩ 电阻，不是 ppm 浓度**。需根据模块和标定结果决定上下限，因此 Web 和设备端的燃气告警均默认关闭。完成标定后可在 `device.env` 启用设备端燃气报警：燃气异常为连续三短声，温湿度异常为单次长声。Web 阈值用于后端通知，不会下发到开发板，本地与远程阈值需要分别设置。
+燃气传感器的值是 **kΩ 电阻，不是 ppm 浓度**。需根据模块和标定结果决定上下限，因此 Web 和设备端的燃气告警均默认关闭。Web 保存阈值时会通过 IoTDA 同步命令 `SetThresholds` 下发到在线开发板；设备校验并持久化成功后返回确认，后端随后保存相同规则。恢复缓冲仅用于 Web 告警状态机，设备端使用启用状态和上下限。设备离线或未确认时，本次保存失败，原有设备端和 Web 端阈值保持不变。
 
 ## 本地运行
 
@@ -58,6 +58,19 @@ npm run dev
 | `temperature` | decimal | °C | -50～150 |
 | `humidity` | decimal | %RH | 0～100 |
 | `gas_resistance` | decimal | kΩ | 0～1000000 |
+
+在同一服务中添加命令 `SetThresholds`，并定义以下下发参数：
+
+| 参数 | 类型 |
+|---|---|
+| `temperature_enabled` | boolean |
+| `temperature_low`、`temperature_high` | decimal |
+| `humidity_enabled` | boolean |
+| `humidity_low`、`humidity_high` | decimal |
+| `gas_enabled` | boolean |
+| `gas_low`、`gas_high` | decimal |
+
+设备订阅命令 Topic，并通过带相同 `request_id` 的响应 Topic 返回执行结果。IAM 用户除查询影子权限外，还需要 `iotda:commands:send` 权限。
 
 随后注册设备。设备侧 MQTT 用户名使用设备 ID，Client ID 和 MQTT Password 使用华为云 MQTT 连接参数生成工具生成的值；派生后的 MQTT Password 与原始设备密钥不是同一值。Client ID 的时间校验选项和时间戳须与生成密码时一致，开启时间校验的凭据需要更新，不应固化过期凭据。
 

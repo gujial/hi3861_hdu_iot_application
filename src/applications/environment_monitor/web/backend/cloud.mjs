@@ -92,6 +92,50 @@ export class Cloud {
     }
     return { stamp, data };
   }
+  async setThresholds(rules) {
+    const e = this.env;
+    if (!e.IOTDA_ENDPOINT || !e.IOTDA_PROJECT_ID || !e.IOTDA_DEVICE_ID)
+      throw new Error('等待配置华为云接口、项目 ID 和设备 ID');
+    const headers = {
+      'X-Auth-Token': await this.auth(),
+      'Content-Type': 'application/json',
+    };
+    if (e.IOTDA_INSTANCE_ID) headers['Instance-Id'] = e.IOTDA_INSTANCE_ID;
+    const response = await this.request(
+      `${e.IOTDA_ENDPOINT.replace(/\/$/, '')}/v5/iot/${encodeURIComponent(e.IOTDA_PROJECT_ID)}/devices/${encodeURIComponent(e.IOTDA_DEVICE_ID)}/commands`,
+      {
+        method: 'POST',
+        headers,
+        signal: AbortSignal.timeout(25000),
+        body: JSON.stringify({
+          service_id: e.IOTDA_SERVICE_ID || 'Environment',
+          command_name: 'SetThresholds',
+          paras: {
+            temperature_enabled: rules.temperature.enabled,
+            temperature_low: rules.temperature.low,
+            temperature_high: rules.temperature.high,
+            humidity_enabled: rules.humidity.enabled,
+            humidity_low: rules.humidity.low,
+            humidity_high: rules.humidity.high,
+            gas_enabled: rules.gas_resistance.enabled,
+            gas_low: rules.gas_resistance.low,
+            gas_high: rules.gas_resistance.high,
+          },
+        }),
+      },
+    );
+    if (!response.ok) {
+      if (response.status === 401) {
+        this.token = '';
+        this.expires = 0;
+      }
+      throw new Error(`IoTDA 阈值下发失败（HTTP ${response.status}）`);
+    }
+    const result = await response.json();
+    if (result.response?.result_code !== 0)
+      throw new Error(result.error_msg || '设备未确认阈值更新');
+    return result;
+  }
 }
 export async function notify(env, alert, request = fetch) {
   if (!env.NTFY_URL || !env.NTFY_TOPIC) return false;
