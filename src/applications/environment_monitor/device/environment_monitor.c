@@ -30,10 +30,10 @@
 #include "aht20.h"
 #include "oled_ssd1306.h"
 
+#include "environment_cloud.h"
 #include "hi_adc.h"
 #include "securec.h"
 #include <math.h>
-#include "environment_cloud.h"
 #ifdef ENVIRONMENT_CLOUD_ENABLED
 #include "environment_config.h"
 #else
@@ -178,11 +178,6 @@ static void EnvironmentMonitorTask(void *argument) {
       printf("\r\n hi_adc_read fail, ret=%d", ret);
     }
 
-#ifdef ENVIRONMENT_CLOUD_ENABLED
-    if (gasValid && isfinite(temperature) && isfinite(humidity)) {
-      EnvironmentCloudReport(temperature, humidity, gasSensorResistance);
-    }
-#endif
     OledShowString(0, IDX_5, "                ", 1);
     OledShowString(0, IDX_6, "                ", 1);
     OledShowString(0, IDX_0, "Sensor values:", 1);
@@ -217,22 +212,36 @@ static void EnvironmentMonitorTask(void *argument) {
     EnvironmentThresholds thresholds;
     EnvironmentCloudGetThresholds(&thresholds);
 #else
-    EnvironmentThresholds thresholds = {
-        ENV_LOCAL_TEMP_LOW, ENV_LOCAL_TEMP_HIGH,
-        ENV_LOCAL_HUMIDITY_LOW, ENV_LOCAL_HUMIDITY_HIGH,
-        ENV_LOCAL_GAS_LOW, ENV_LOCAL_GAS_HIGH, 1, 1,
-        ENV_LOCAL_GAS_ALARM_ENABLED
-    };
+    EnvironmentThresholds thresholds = {ENV_LOCAL_TEMP_LOW,
+                                        ENV_LOCAL_TEMP_HIGH,
+                                        ENV_LOCAL_HUMIDITY_LOW,
+                                        ENV_LOCAL_HUMIDITY_HIGH,
+                                        ENV_LOCAL_GAS_LOW,
+                                        ENV_LOCAL_GAS_HIGH,
+                                        1,
+                                        1,
+                                        ENV_LOCAL_GAS_ALARM_ENABLED};
 #endif
     int temperatureAlarm = thresholds.temperatureEnabled &&
-        (temperature > thresholds.temperatureHigh ||
-         temperature < thresholds.temperatureLow);
-    int humidityAlarm = thresholds.humidityEnabled &&
-        (humidity < thresholds.humidityLow ||
-         humidity > thresholds.humidityHigh);
+                           (temperature > thresholds.temperatureHigh ||
+                            temperature < thresholds.temperatureLow);
+    int humidityAlarm =
+        thresholds.humidityEnabled && (humidity < thresholds.humidityLow ||
+                                       humidity > thresholds.humidityHigh);
     int gasAlarm = thresholds.gasEnabled && gasValid &&
                    (gasSensorResistance < thresholds.gasLow ||
                     gasSensorResistance > thresholds.gasHigh);
+    int alarmActive = gasAlarm || temperatureAlarm || humidityAlarm;
+#ifdef ENVIRONMENT_CLOUD_ENABLED
+    static int previousAlarmActive;
+    if (gasValid && isfinite(temperature) && isfinite(humidity)) {
+      if (alarmActive && !previousAlarmActive)
+        EnvironmentCloudReportNow(temperature, humidity, gasSensorResistance);
+      else
+        EnvironmentCloudReport(temperature, humidity, gasSensorResistance);
+      previousAlarmActive = alarmActive;
+    }
+#endif
     if (gasAlarm) {
       OledShowString(0, IDX_5, "GAS WARNING!!!  ", 1);
       if (temperatureAlarm || humidityAlarm)
@@ -244,7 +253,7 @@ static void EnvironmentMonitorTask(void *argument) {
         OledShowString(0, temperatureAlarm ? IDX_6 : IDX_5, "humi abnormal!!",
                        1);
     }
-    if (gasAlarm || temperatureAlarm || humidityAlarm)
+    if (alarmActive)
       SoundAlarm(gasAlarm);
 
     usleep(DELAY_500MS);
