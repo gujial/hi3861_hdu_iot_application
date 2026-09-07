@@ -1,278 +1,340 @@
-# Hi3861 OpenHarmony 嵌入式技术及应用
+# Hi3861 环境监测系统项目文档
+
+## 1. 项目概述
+
+本项目面向家庭环境安全看护，重点服务独居老人、行动不便者及其家人。系统由放置在家中的 Hi3861 监测设备和供本人或家人使用的 Web 应用组成：设备持续采集温度、湿度和 MQ-2 燃气传感器电阻，在现场通过 OLED 展示信息，并在发现异常时使用蜂鸣器提醒居住者；同时将数据上传华为云 IoTDA，由 Web 服务进行远程监测和阈值判断，再通过 ntfy 将告警推送到本人或家人的手机。
+
+系统采用“现场提醒 + 远程通知”的双通道思路。现场蜂鸣器不依赖用户查看手机，适合行动不便或不熟悉智能设备的居住者；远程通知让不在家的家人及时获知持续高温、低温、湿度异常或疑似易燃气体泄漏，并通过电话确认、联系邻居或物业、返回现场等方式进行处置。本系统用于辅助发现风险，不能替代符合消防规范的可燃气体报警器、烟雾报警器或紧急呼叫设备。
+
+正式代码位于 `src/applications/environment_monitor`：
+
+- `device`：Hi3861 设备程序、云连接和配置生成工具；
+- `web`：Web 页面、Node.js 后端、SQLite 数据库及自动化测试；
+- `BUILD.gn`：OpenHarmony 正式应用构建入口。
+- [家庭环境监测系统部署方法](doc/record/家庭环境监测系统部署方法.md)
+- [家庭环境监测系统测试方法](doc/record/家庭环境监测系统测试方法.md)
+- [家庭环境监测系统用户使用手册](doc/record/家庭环境监测系统用户使用手册.md)
+
+### 1.1 项目目标
+
+1. 持续监测住宅内的温度、湿度和燃气传感器变化，不因互联网断开而停止本地采集和显示。
+2. 在异常发生时尽快通过蜂鸣器提醒屋内人员，减少老年人或行动不便者错过危险信号的可能性。
+3. 通过 MQTT 3.1.1、TLS 1.2 和 QoS 1 将有效读数安全上传华为云 IoTDA。
+4. 让本人或家人通过 Web 页面查看最新数据、历史趋势、设备状态和告警记录。
+5. 允许家人依据季节、房间和居住者需求设置温湿度与燃气电阻的上下限和恢复缓冲。
+6. 在超限和恢复正常时通过 ntfy 推送到手机，并在临时失败后重试。
+7. 将账号凭据、设备密钥和访问令牌保留在本地环境文件中，避免提交到版本库。
+
+### 1.2 项目范围
+
+系统当前面向一套住宅监测点，即一台 HiHope HiSpark Pegasus 开发板和一个本地 Web 实例，适合先在卧室、客厅或厨房附近进行原型验证。燃气数据表示 MQ-2 传感器电阻，单位为 kΩ；传感器电阻与气体浓度并非简单同向关系，且未经预热、标定和环境补偿时不能换算为可靠的 ppm 浓度。
+
+当前固件已实现可配置的温湿度本地报警，以及标定后可显式启用的燃气电阻本地报警。燃气异常使用连续三短声，温湿度异常使用单次长声。为防止未经标定产生误导，燃气报警默认关闭。Web 保存阈值时通过 IoTDA `SetThresholds` 同步命令下发到在线设备；设备校验、持久化并确认后，后端才保存相同规则。恢复缓冲只用于 Web 告警状态机。
+
+## 2. 系统需求
+
+### 2.1 功能需求
+
+| 编号 | 功能需求 | 验收标准 | 优先级 |
+| --- | --- | --- | --- |
+| FR-01 | 采集温度和湿度 | AHT20 有效时持续获得有限数值；读取失败时不上传伪造数据 | 高 |
+| FR-02 | 采集燃气电阻 | ADC 有效时计算并显示 kΩ 电阻；无效时显示错误且不上传该组数据 | 高 |
+| FR-03 | 本地显示与报警 | OLED 显示三项数据；温湿度异常时蜂鸣器鸣响；完成标定后，疑似易燃气体泄漏也应触发独立且明显的蜂鸣器报警 | 高 |
+| FR-04 | Wi-Fi 与云连接 | 自动连接 Wi-Fi、同步时间并使用 MQTTS 接入 IoTDA；断线后指数退避重连 | 高 |
+| FR-05 | 属性上报 | 默认每 30 秒向指定服务上报三项数据；任一启用指标首次越界时立即优先上报该异常样本；QoS 为 1 | 高 |
+| FR-06 | 数据查询与保存 | 后端轮询设备影子，校验时间和属性后写入 SQLite，保留 30 天读数 | 高 |
+| FR-07 | Web 数据展示 | 本人或家人输入管理令牌后可查看最新值、历史趋势、陈旧状态和告警记录 | 高 |
+| FR-08 | 阈值管理与下发 | 家人可设置三项指标的启用状态、上下限和恢复缓冲；在线设备校验、持久化并确认后，后端保存相同规则；非法修改整体拒绝 | 高 |
+| FR-09 | 告警判断 | 首次越界产生告警，持续越界不重复告警，越过恢复缓冲后产生恢复事件 | 高 |
+| FR-10 | ntfy 推送 | 向本人或家人的手机按事件顺序发送告警和恢复消息；失败后退避重试，重启后继续处理 | 高 |
+| FR-11 | 访问控制 | 所有 `/api/` 接口要求 Bearer 管理令牌，错误令牌返回 JSON 格式的 401 响应 | 高 |
+| FR-12 | 配置生成 | 从私有环境变量生成固件头文件，并拒绝明显错误的 MQTT、证书和间隔配置 | 高 |
+
+### 2.2 非功能需求
+
+| 编号 | 非功能需求 | 设计约束或指标 |
+| --- | --- | --- |
+| NFR-01 | 安全性 | MQTTS 使用 TLS 1.2 并校验服务端证书；云和 Web 凭据不进入前端包或 Git |
+| NFR-02 | 可靠性 | 采集与网络任务解耦；只保留最新待发读数；通知状态、阈值和重试队列持久化 |
+| NFR-03 | 时效性 | 设备默认 30 秒上报；正常到异常的边沿绕过周期立即入队；后端默认 10 秒轮询，浏览器默认 5 秒刷新 |
+| NFR-04 | 数据质量 | 拒绝缺失、非数值、越界、未来时间及乱序数据；过期读数不触发新报警 |
+| NFR-05 | 可部署性 | Web 接口、数据库路径、轮询周期和第三方服务均由环境变量指定 |
+| NFR-06 | 可维护性 | 设备端与 Web 端位于正式应用目录；关键阈值和云接口逻辑具备自动化测试 |
+| NFR-07 | 资源约束 | Hi3861 不保存历史队列；后端历史查询限制为最近 180 条，页面告警限制为最近 40 条 |
+| NFR-08 | 易用性 | 居住者无需操作即可获得现场提醒；家人端页面应使用明确中文状态、醒目的异常信息和较少操作步骤 |
+| NFR-09 | 家庭可用性 | 断网时仍保留本地监测；恢复联网后自动重连；系统应能区分“环境正常”和“数据长时间未更新” |
+
+### 2.3 外部依赖
+
+- Hi3861/OpenHarmony 固件构建环境；
+- AHT20、MQ-2、SSD1306 OLED 和蜂鸣器；
+- 可访问 NTP UDP 123 和 IoTDA MQTTS TCP 8883 的 Wi-Fi；
+- 华为云 IoTDA 产品、设备、产品模型及 IAM 读取权限；
+- Node.js 24、npm 和支持内置 SQLite 的运行环境；
+- ntfy 服务及可选的主题访问令牌。
+
+## 3. 系统设计
+
+### 3.1 总体架构
+
+```mermaid
+flowchart LR
+    A[AHT20 温湿度] --> D[Hi3861 采集任务]
+    B[MQ-2 ADC] --> D
+    D --> C[现场 OLED 与蜂鸣器]
+    D --> Q[容量为 1 的最新读数队列]
+    D -->|首次越界优先替换| Q
+    Q --> M[MQTTS 客户端]
+    M -->|属性上报 QoS 1| I[华为云 IoTDA]
+    I -->|设备影子 HTTPS| S[Node.js 后端]
+    S --> DB[(SQLite)]
+    S --> W[本人或家人的 Web 页面]
+    DB --> E[阈值与状态机]
+    E --> N[ntfy]
+    N --> U[本人或家人的手机]
+```
 
-![OS](https://img.shields.io/badge/OS-OpenHarmony-brightgreen?style=for-the-badge) ![platform](https://img.shields.io/badge/platform-Hi3861V100-brightgreen?logo=huawei&style=for-the-badge) ![license](https://img.shields.io/badge/license-Apache-brightgreen?style=for-the-badge) ![star](https://img.shields.io/badge/dynamic/json?style=for-the-badge&color=brightgreen&logo=Gitee&label=stars&url=https://gitee.com/api/v5/repos/HiSpark/hi3861_hdu_iot_application&query=$.stargazers_count) ![watch](https://img.shields.io/badge/dynamic/json?style=for-the-badge&color=brightgreen&logo=Gitee&label=watch&url=https://gitee.com/api/v5/repos/HiSpark/hi3861_hdu_iot_application&query=$.watchers_count) ![fork](https://img.shields.io/badge/dynamic/json?style=for-the-badge&color=brightgreen&logo=Gitee&label=fork&url=https://gitee.com/api/v5/repos/HiSpark/hi3861_hdu_iot_application&query=$.forks_count)
+### 3.2 设备端设计
 
+设备采集任务负责传感器初始化、周期采样、本地显示和蜂鸣器控制。在家庭场景中，本地提醒是互联网不可用时的最低保障，因此采集任务不依赖云任务。AHT20 或 ADC 读取失败时跳过云上报，避免将默认值当成真实数据。温度、湿度和燃气电阻的本地上下限由私有设备配置生成；燃气报警只有在显式启用且读数有效时才参与判断，并用连续三短声与温湿度单次长声区分。启用前仍需完成传感器预热、基线测量和实际模块标定。
 
+采集任务在每次有效采样后计算三个报警状态，并记录上一采样周期是否存在异常。状态由正常变为异常时调用 `EnvironmentCloudReportNow`，绕过普通上报间隔并用当前异常样本替换容量为 1 的队列内容。持续异常改用普通周期上报，从而兼顾异常时效与消息量控制。立即上报仍只执行非阻塞入队，MQTT 发布和 QoS 1 完成等待全部由云任务处理，避免网络延迟阻塞 OLED、蜂鸣器和传感器采集。
 
-## 介绍
+云任务独立完成以下工作：
 
-欢迎使用Hi3861V100开发OpenHarmony嵌入式应用.
+1. 连接 Wi-Fi 并等待网络可用；
+2. 使用多个候选 NTP 服务器同步时间；
+3. 使用根 CA 校验 IoTDA 服务器证书；
+4. 用 Device ID、Client ID 和派生密码完成 MQTT 鉴权；
+5. 从容量为 1 的消息队列获取最新读数并上报；
+6. 优先发送首次越界时替换进入队列的异常样本；
+7. 连接失败后按 2、4、8、16、32 秒退避重试。
 
+上报主题为：
 
+```text
+$oc/devices/{device_id}/sys/properties/report
+```
 
-## 硬件说明
+上报报文为：
 
-这是一个嵌入式软件项目,你需要有一块Hi3861V100的开发板. 
-如果你只是想使用这个项目的SDK开发应用,那么基本上任何一块基于Hi3861V100的开发板都是可以的. 
-如果你需要运行Vendor目录下的Demo, 目前支持5种类型的开发板: 
+```json
+{
+  "services": [
+    {
+      "service_id": "Environment",
+      "properties": {
+        "temperature": 25.6,
+        "humidity": 48.2,
+        "gas_resistance": 12.3
+      }
+    }
+  ]
+}
+```
 
-- 上海海思 HiSpark T1（购买链接：https://h5.m.taobao.com/awp/core/detail.htm?spm=a1z10.3-c.w4002-25088660106.9.64582e70BVF0lP&id=738643816512 ）
-<div align=center><img src="doc/pic/iot_car_t1.jpg" alt="iot_car" height="200" />    <img src="doc/pic/balance_car.jpg" alt="hisaprk_link" height="200"/>   </div>
+`configure_device.py` 从本机环境变量生成被 Git 忽略的 `environment_config.h`。生成前检查 MQTT 地址、Device ID 与 Client ID 的关系、Client ID 时间戳、64 位 HMAC 密码格式、CA PEM、Wi-Fi 字段长度和上报间隔。脚本只能验证结构，不能确认派生密码是否使用了华为云设备当前密钥。
 
-- 上海海思 HiSpark M1（购买链接：https://h5.m.taobao.com/awp/core/detail.htm?spm=a1z10.3-c.w4002-25088660106.11.64582e70BVF0lP&id=738830577585 ）
-  <div align=center><img src="doc/pic/M1.jpg" alt="iot_car" height="200" />    <img src="doc/pic/hisaprk_link.jpg" alt="iot_car" height="200"/>   </div>
+### 3.3 云端与 Web 后端设计
 
-- [润和 HiHope Pegasus](src/vendor/hihope/hispark_pegasus/Hihope-hispark_pegasus-十分钟上手.md)
-<div align=center><img src="doc/pic/image-20230201170309577.png" alt="HiHope pegasus" width="400" /> </div>
+后端使用 IAM 用户名和密码自动获取项目级 Token，也支持短期 `IOTDA_AUTH_TOKEN`。Token 在有效期内缓存；IoTDA 返回 401 后清除缓存，下一轮重新认证。
 
+后端读取指定设备的影子，从配置的服务 ID 和属性映射中提取三项指标。只有时间合法、属性齐全且为有限数值的数据才进入数据库。SQLite 保存以下内容：
 
-- [小熊派 BearPI Nano](src/vendor/bearpi/bearpi_hm_nano/doc/BearPi-HM_Nano开发指导.md)
-<div align=center><img src="src/vendor/bearpi/bearpi_hm_nano/doc/figures/00_public/BearPi-HM_Nano_Info.png" alt="BearPi Nano" width="400" /> </div>
+- `readings`：按云端上报时间唯一保存读数；
+- `settings`：三项阈值及恢复缓冲；
+- `states`：每项指标当前的 normal、low 或 high 状态；
+- `alerts`：告警、恢复事件、投递状态、重试次数和下次重试时间。
 
-- [华清远见 FS-Hi3861](<src/vendor/hqyj/fs_hi3861/doc/华清远见 FS_Hi3861开发指导.md>)
-<div align=center><img src="src/vendor/hqyj/fs_hi3861/doc/figures/image-20230406094834780.png" alt="HQYJ FS-Hi3861" width="400" /> </div>
+后端提供两个主要接口：
 
+| 方法与路径 | 功能 | 成功响应 |
+| --- | --- | --- |
+| `GET /api/status` | 获取最新数据、历史、阈值、状态和告警 | HTTP 200 JSON |
+| `PUT /api/thresholds` | 校验全部阈值，通过 IoTDA 同步命令下发，设备确认后原子保存 | HTTP 200 `{"ok":true}` |
 
-## 快速上手
+所有 API 都要求 `Authorization: Bearer <ADMIN_TOKEN>`。管理令牌仅保存在浏览器当前页面内存中。
 
-可以在Windows环境或"Windows+Linux虚拟机"环境下使用本项目的代码.
+### 3.4 告警状态机
 
-### Windows IDE环境搭建
+以温度上限 35°C、恢复缓冲 0.5°C 为例：
 
-如果在Windows下搭建编译开发环境（目前提供两种编译方式，第一种新建工程，第二种导入工程，任选其一即可实现Hi3861V100编译）, 我们推荐Windows 10 64位系统或以上版本, 简要步骤如下(详细内容参考doc目录下<物联网技术及应用实验指导手册>):
-#### 新建工程
-1. 下载并安装Windows版本的HUAWEI DevEco Device Tool(devicetool-windows-tool-3.1.0.500.zip)：https://device.harmonyos.com/cn/develop/ide#download
+- 温度不高于 35°C 时保持正常；
+- 温度高于 35°C 时进入 high 并产生一次告警；
+- high 状态下，温度仍高于 34.5°C 时保持 high，不重复通知；
+- 温度降至 34.5°C 或更低时恢复 normal，并产生一次恢复通知。
 
-2. 新建工程: 打开已安装DevEco Decive Tool插件的VSCode, 在DevEco Device Tool主页点击"导入工程", 弹窗中选择SDK代码目录, 点击“新建工程”.
+下限采用对称规则。阈值关闭时，如果指标原先处于异常状态，会产生“监测已关闭”的状态变化事件。过期读数仍可展示，但不会触发新告警。
 
-3. 后续弹窗"SOC"选择"HI3861", 开发板选择"hi3861", 工程名选择"用户自定义"，工程路径选择”用户自定义“，SDK显示”hi3861_hdu_iot@1.0.0(uninstalled)“,点击"下载".
-> **注意：由于windows自身限制，路径不能超过260个字符，在git下载和解压Hi3861 SDK代码时尽量放在磁盘根目录下，防止导致的编译错误问题**
-4. 编译: 点击左侧“build”.
+### 3.5 安全设计
 
-5. 烧录: 硬件连接电脑, 如电脑未安装CH340G驱动, 先安装DevTools_Hi3861V100_v1.0/usb_serial_driver路径下的CH341SER.EXE串口驱动. 然后点击左侧“工程配置”, 找到“upload_port”选项, 选择开发板对应的烧录串口进行烧录. 
+1. `device.env`、Web `.env` 和生成的固件配置不提交到 Git。
+2. 设备端保存的是 IoTDA 派生 MQTT 密码，原始 DeviceSecret 不写入源码。
+3. MQTT 使用 TLS 1.2、服务器证书校验和 8883 端口。
+4. Web 后端只允许 HTTPS 第三方接口；仅 localhost 调试允许 HTTP。
+5. 管理令牌至少 16 位，并使用定长比较降低简单时序差异。
+6. 阈值请求限制为 8 KiB，静态文件路径经过规范化，防止目录穿越。
 
-6. 按一下复位键, 现在, 你的第一个OpenHarmony程序已经在你的开发板上运行起来了. :thumbsup:
-#### 导入工程
-   1. 下载并解压Hi3861V100编译工具链：
-      https://hispark-obs.obs.cn-east-3.myhuaweicloud.com/DevTools_Hi3861V100_v1.0.zip
+### 3.6 已知设计边界
 
-   2. 拉取本项目的SDK代码到本地：
+- 首次越界立即上报降低了短暂异常被普通上报周期遗漏的概率，但设备影子只保存最新属性，异常在后端两次轮询之间快速出现并恢复时仍可能被覆盖；
+- 后端停机期间的每一条历史上报无法从设备影子恢复；
+- ntfy 请求超时但服务端已收到时，重试可能产生重复消息，事件编号可用于识别；
+- 当前按一个数据库对应一台设备设计，多设备需要增加设备维度和租户隔离；
+- MQTT 设备同步命令要求设备在线并在 20 秒内响应；设备离线时本次阈值保存失败。
 
-      ```bash
-      git clone https://gitee.com/HiSpark/hi3861_hdu_iot_application.git
-      ```
+## 4. User Stories
 
-      > **注意：由于windows自身限制，路径不能超过260个字符，在git下载和解压Hi3861 SDK代码时尽量放在磁盘根目录下，防止导致的编译错误问题**
+主要角色包括：住在监测住宅中的老人或行动不便者、在外地或工作场所关注其安全的家人，以及负责安装、标定和维护设备的维护者。
 
-   3. 下载并安装Windows版本的HUAWEI DevEco Device Tool(devicetool-windows-tool-3.1.0.500.zip)：https://device.harmonyos.com/cn/develop/ide#download
+### Story 1：无需操作的现场提醒
 
-   4. 导入SDK: 打开已安装DevEco Decive Tool插件的VSCode, 在DevEco Device Tool主页点击"导入工程", 弹窗中选择SDK代码目录, 点击“导入”.
+**作为** 独居老人或行动不便者，**我希望** 环境异常时设备自动发出清晰的蜂鸣提示，**以便** 即使没有查看手机或打开网页，也能意识到风险并采取开窗、关闭气源或求助等措施。
 
-   5. 后续弹窗"SOC"选择"HI3861", 开发板选择"hi3861", 点击"导入".
+验收条件：温湿度越过本地阈值时蜂鸣器工作且 OLED 显示异常类型，并立即将首次越界样本加入上报队列；燃气报警在完成标定并实现设备端规则后，使用比普通状态提示更易识别的报警模式；断网不影响现场采集与报警。
 
-   6. 配置编译工具链路径: 点击左侧的“工程配置”, 在右侧窗口找到“compiler_bin_path”, 选择到之前下载的开发工具路径, 选择`env_set.py`文件所在的目录层级.
+### Story 2：家人查看实时环境
 
-   7. 编译: 点击左侧“build”.
+**作为** 不在现场的家人，**我希望** 在手机或电脑浏览器查看家中的最新温度、湿度和燃气电阻，**以便** 了解居住环境和设备是否仍在工作。
 
-   8. 烧录: 硬件连接电脑, 如电脑未安装CH340G驱动, 先安装DevTools_Hi3861V100_v1.0/usb_serial_driver路径下的CH341SER.EXE串口驱动. 然后点击左侧“工程配置”, 找到“upload_port”选项, 选择开发板对应的烧录串口进行烧录. 
+验收条件：使用正确管理令牌后显示三项最新值、上报时间和数据是否陈旧；错误令牌不能访问数据。
 
-   9. 按一下复位键, 现在, 你的第一个OpenHarmony程序已经在你的开发板上运行起来了. :thumbsup:
+### Story 3：查看历史变化
 
-### Windows命令行编译环境搭建
+**作为** 家人，**我希望** 查看近期环境趋势，**以便** 判断高温、低温或湿度异常是短暂波动还是持续问题，并据此调整空调、加湿器或通风安排。
 
-为了方便习惯命令行编译的开发者使用, 我们同时也支持在Windows命令行环境编译方式:
-前两步操作与IDE环境搭建方式相同, 即下载并解压Hi3861V100编译工具链和拉取SDK代码到本地. 然后:
-1. 进入DevTools_Hi3861V100_v1.0.zip解压后目录, 双击运行`env_start.bat`, 则将在完成首次配置后, 进入一个转为编译Hi3861V100而配置的命令行环境;
-2. 在命令行窗口中切换到SDK所在的src目录:
-    ```
-    [DevTools] D:\DevTools_Hi3861V100_v1.0>cd d:\hi3861_hdu_iot_application\src
-    ```
-3. 执行命令 `hb set`, 直接回车选择当前缺省选项, 执行命令`hb build`:
-    ```
-    [DevTools] D:\hi3861_hdu_iot_application\src>hb set
-    [DevTools] D:\hi3861_hdu_iot_application\src>hb build
-    ```
-    即完成编译. 
-    
-    > **如有提示`account_related_group_manager_mock.c: No such file or directory`之类报错信息, 是Windows系统文件路径不能超过260字符的限制所致, 请尝试将SDK代码仓放置于较浅层的磁盘目录下重新尝试**
-4. 编译后镜像文件位于 out/hispark_pegasus/wifiiot_hispark_pegasus/Hi3861_wifiiot_app_allinone.bin, 使用DevTools_Hi3861V100_v1.0/burntool/BurnTool.exe完成烧录. (如果缺少USB转串口驱动, 则执行usb_serial_driver\CH341SER.EXE安装)
+验收条件：页面按时间顺序展示最近 180 条有效读数；重复或乱序上报不产生错误的历史点。
 
-### Linux环境搭建
+### Story 4：设置适合家庭的报警阈值
 
-如果在Linux下搭建编译开发环境, 我们推荐的虚拟机系统配置为VirtualBox 6.0 + Ubuntu20.04, 推荐虚拟机内存2G以上, 虚拟机硬盘20G以上. 你可以通过搜索学习相关的网络文章实现安装虚拟机Linux.
-
-我们推荐使用两块虚拟机网卡, 一块设置成NAT方式, 用于虚拟机连接外部网络, 一块使用Host Only模式, 用于宿主机连接虚拟机, 这样你会遇到最少的问题.
-
-装好虚拟机Linux后, 你可以参考doc目录下的教程手动安装所需的Linux软件, 搭建所有的软件编译环境. 如果你觉得自己从头搭建环境对你来说太复杂, 或者担心新装软件会与原本系统里的一些软件冲突, 又或者你只是想小试一下OpenHarmony的开发体验, 或者你单纯就是懒的话!😶, 我们推荐你使用我们已经封装好的Docker, 因为它是如此的方便! 你只要按照以下的指导一步一步输入命令就可以:
-
-1. 安装docker(如果你的Ubuntu系统没有docker的话)
-
-   ```bash
-   sudo apt install docker.io -y
-   ```
-
-   或者
-
-   ```bash
-   curl -fsSL https://get.docker.com | bash -s docker --mirror Aliyun
-   ```
-
-2. 拉取我们封装好的Docker镜像到本地
-
-   ```bash
-   docker pull hispark/hi3861_hdu_iot_application:1.0
-   ```
-
-3. 新建一个容器命名为openharmony, 映射你的用户目录~到容器内目录/home/hispark, 同时把容器端口22映射为外部端口2222
-
-   ```bash
-   docker run -itd -p 2222:22 -v ~/code:/home/hispark --name openharmony hispark/hi3861_hdu_iot_application:1.0
-   ```
-
-4. 进入容器
-
-   ```bash
-   docker exec -it openharmony /bin/bash
-   ```
-   >  现在你已经有了一个专门用来编译代码的Docker容器环境了. 你每次可以在虚拟机linux中执行命令行`docker exec -it openharmony /bin/bash`进入这个Docker容器环境, 也可以在Windows中通过ssh软件(推荐MobaXTerm)连接虚拟机的2222端口进入(账户名root, 密码123456)
-
-5. 进入目录拉取代码
-    通过命令行或ssh进入容器内部环境中, 执行
-    ```
-    cd /home/hispark
-    git clone https://gitee.com/HiSpark/hi3861_hdu_iot_application.git
-    ```
-    > **我们建议你把所有代码工作都保存在/home/hispark这个映射目录中, 这是因为Docker的容器环境是临时性的, 当Docker容器销毁时, 内部所有数据信息都会被删除而且无法恢复, 这就是为什么我们强烈建议你把代码工作保存在映射的用户目录中, 因为这里是你真实的用户存储空间, 不会随Docker容器销毁而消失.**
-
-6. 编译: 进入src目录, 执行命令`hb set`, 回车两次, 配置OpenHarmony信息
-    ```bash
-    cd hi3861_hdu_iot_application/src
-    hb set
-    hb build -f
-    ```
-
-    > 编译完成后的固件镜像在src/out目录中. 编译后的镜像名为Hi3861_loader_signed.bin和Hi3861_wifiiot_app_burn.bin
-
-7. 烧录: 编译后的镜像文件copy到Windows中(通过samba或ssh), 然后运行HiBurn([下载](https://ost.51cto.com/resource/29)), 将镜像下载到板上运行. 这里我还是推荐你用命令行的方式运行: 在Windows中建立这样一个脚本, 并命名为例如fast_burn.bat之类的名字, 复制以下内容, 并将大括号{}部分替换为你的实际信息, 修改并保存.
-
-    ```bat
-    @ fast_burn.bat
-    copy
-    \\{samba路径}\hi3861_hdu_iot_application\src\out\hispark_pegasus\wifiiot_hispark_
-    pegasus\Hi3861_loader_signed.bin .
-    copy
-    \\{samba路径}\hi3861_hdu_iot_application\src\out\hispark_pegasus\wifiiot_hispark_
-    pegasus\Hi3861_wifiiot_app_burn.bin .
-    {HiBurn路径} -com:{串口端口号} -bin:Hi3861_wifiiot_app_burn.bin -signalbaud:2000000 -2ms -
-    loader:Hi3861_loader_signed.bin
-    ```
-    
-    比如, 我这里的虚拟机网卡IP是192.168.101.56, 我在Win10中通过samba去访问我的代码路径是\\192.168.101.56\share\code, hiburn存放在我电脑的d:\hispark\util目录下, 开发板接入我的电脑, 设备管理器里查看串口号为4, 所以我这里的fast_burn.bat是这样的
+**作为** 家人或维护者，**我希望** 根据季节、房间用途和居住者身体状况设置各项阈值，**以便** 在及时提醒与减少误报之间取得平衡。
 
-    ```bat
-    @ fast_burn.bat
-    copy
-    \\192.168.101.56\share\code\hi3861_hdu_iot_application\src\out\hispark_pegasus\wifiiot_hispark_
-    pegasus\Hi3861_loader_signed.bin .
-    copy
-    \\192.168.101.56\share\code\hi3861_hdu_iot_application\src\out\hispark_pegasus\wifiiot_hispark_
-    pegasus\Hi3861_wifiiot_app_burn.bin .
-    d:\hispark\util\hiburn.exe -com:4 -bin:Hi3861_wifiiot_app_burn.bin -signalbaud:2000000 -2ms -
-    loader:Hi3861_loader_signed.bin
-    ```
-    假设上述一切顺利的话, 现在双击这个fast_burn.bat, 将会跳出一个命令行窗口, 并提示你按一下板子的复位按键. 按开发板的复位键后将会自动进入固件烧录过程, 烧录完毕后窗口会自动关闭.
+验收条件：合法设置一次性保存；下限不小于上限、超出量程或缓冲过大的设置整体拒绝，原配置保持不变。
 
-1. 再按一下复位键, 现在, 你的第一个OpenHarmony程序已经在你的开发板上运行起来了. :thumbsup:
+### Story 5：家人接收异常通知
 
+**作为** 不在现场的家人，**我希望** 温湿度异常或燃气传感器达到报警条件时收到手机推送，**以便** 立即联系本人、邻居或物业，必要时返回现场或联系应急服务。
 
+验收条件：正常到异常的状态变化产生一条告警；持续异常不重复产生；推送包含指标、数值、阈值、时间和事件编号。
 
-## Demo
+### Story 6：确认环境恢复
 
-### Hispark T1 
-HiSpark T1提供了以下Demo供开发参考 ([下载pdf版本指导文档](doc/%E7%89%A9%E8%81%94%E7%BD%91%E6%8A%80%E6%9C%AF%E5%8F%8A%E5%BA%94%E7%94%A8%E5%AE%9E%E9%AA%8C%E6%8C%87%E5%AF%BC%E6%89%8B%E5%86%8C.pdf)) ：
+**作为** 已收到告警的用户，**我希望** 数据恢复后收到通知，**以便** 确认异常已经解除。
 
-| 例程名 | 功能  | 文档章节 |
-| ---- | ---- | ---- |
-| led_demo            | 红色LED闪亮                        | 3.1  |
-| encoder_demo        | 编码器                             | 3.2  |
-| tricolor_lamp_demo  | 小车大灯实现红、绿、蓝、白循环闪亮 | 3.3  |
-| button_demo         | IO扩展芯片实现按键功能             | 3.4  |
-| hcsr04_demo         | 超声波                             | 3.5  |
-| motor_demo          | PWM马达转动                        | 3.6  |
-| sg92r_demo          | 舵机90°、0°、-90°                  | 3.7  |
-| cw2015_demo         | 电源管理芯片                       | 3.8  |
-| rtc_demo            | 万年历                             | 3.8  |
-| nfc_demo            | 手机与NFC通信                      | 3.9  |
-| i2c_bus_demo        | I2C总线实验                        | 3.10 |
-| lth1550_demo        | ADC实验模拟信号转为数字信号        | 3.11 |
-| uart_demo           | 串口通信                           | 3.12 |
-| wifi_demo           | WiFi热点创建和WiFi联网             | 3.13 |
-| thread_demo         | 线程                               | 4.1  |
-| semaphore_demo      | 信号量                             | 4.2  |
-| timer_demo          | 定时器                             |4.3  |
-| interrupt_demo      | 中断实验                           | 4.4  |
-| ultrasonic_car_demo | 超声波避障小车                     | 5.1  |
-| trace_demo          | 循迹小车                           |5.2  |
-| trace_ex_demo       | IO扩展芯片实现循迹小车             | 5.2  |
-| imu_square_demo     | 基于陀螺仪YAW角控制小车走正方形    | 5.3  |
-| balance_car_demo    | 平衡车                             | 5.4  |
-| histreaming_demo    | 手机控制小车                       | 5.5  |
-| oc_demo             | 基于华为IoT云平台的智能小车实验    | 5.6  |
+验收条件：数据跨过恢复缓冲后产生恢复事件；恢复事件不能越过仍在等待重试的原告警。
 
-### Hispark M1 
+### Story 7：识别设备离线并自动恢复
 
-HiSpark M1提供了以下Demo供开发参考 ([下载pdf版本指导文档)](src/vendor/hisilicon/hispark_M1/doc/微处理器实验指导手册.pdf) ：
+**作为** 家人或维护者，**我希望** 系统明确显示数据长时间未更新，并在 Wi-Fi、NTP 或 MQTT 暂时失败后自动重连，**以便** 区分“环境正常”和“监测失联”，减少老人现场重启设备的需要。
 
-| 例程名              | 功能                             | 文档章节 |
-| ------------------- | -------------------------------- | -------- |
-| helloworld_demo     | 屏幕显示helloword字样，LED灯闪烁 | 2.9      |
-| interrupt_demo      | 中断实验                         | 4.1      |
-| rotation_demo       | 无级调光                         | 4.2      |
-| matrixkeyboard_demo | 矩阵键盘                         | 4.3      |
-| rtc_demo            | 万年历                           | 4.4      |
-| traffic_light_demo  | 交通灯                           | 4.5      |
-| i2s_voice_demo      | 录音播放                         | 4.6      |
-| nfc_demo            | 手机与NFC通信                    | 4.7      |
-| spi_gyro_demo       | 显示航向角，俯仰角，滚动角       | 4.9      |
-| environment_demo    | 监测温湿度                       | 4.8      |
-| histreaming_demo    | 手机控制LED灯                    | 4.10     |
+验收条件：采集任务在断网期间继续工作；云任务使用退避策略重试；恢复后串口显示 MQTT connected 并继续上报。
 
-### HiHope Pegesus, BearPI Nano和华清远见FS-Hi3861
+### Story 8：安全配置设备
 
-HiHope Pegesus, BearPI Nano, 华清远见Fs-Hi3861等Vendor的Demo, 请分别参阅
-+ [Hihope Pegesus的参考文档](src/vendor/hihope/hispark_pegasus/Hihope-hispark_pegasus-十分钟上手.md)
-+ [BearPI Nano的参考文档](src/vendor/bearpi/bearpi_hm_nano/doc/BearPi-HM_Nano开发指导.md)
-+ [华清远见FS-Hi3861的参考文档](<src/vendor/hqyj/fs_hi3861/doc/华清远见 FS_Hi3861开发指导.md>)
+**作为** 开发者，**我希望** 在编译前检查设备配置，**以便** 尽早发现 Client ID、密码格式、CA 或端口错误。
 
+验收条件：配置生成器拒绝已知结构错误，成功时不打印秘密，并将生成文件权限设置为 0600。
 
+## 5. 项目计划
 
-## 问题与解答
+| 阶段 | 工作内容 | 交付物 | 当前状态 |
+| --- | --- | --- | --- |
+| P1 需求与现状分析 | 分析原 demo、硬件接口和云平台约束，确定三项监测指标 | 需求范围、数据模型 | 已完成 |
+| P2 正式应用迁移 | 将设备端和 Web 端迁移至 `src/applications`，调整 GN 入口 | 正式源码及 `BUILD.gn` | 已完成 |
+| P3 设备云接入 | 增加 Wi-Fi、NTP、MQTTS、证书校验、重连和属性上报 | 云端固件模块 | 已完成 |
+| P4 IoTDA 建模 | 建立 `Environment` 服务及三项属性，注册设备并配置鉴权 | 产品模型和设备 | 已完成基础配置 |
+| P5 Web 与数据层 | 实现设备影子轮询、SQLite、状态接口和历史展示 | 本地 Web 应用 | 已完成 |
+| P6 告警与通知 | 实现阈值、恢复缓冲、告警持久化和 ntfy 重试 | 告警闭环 | 已完成代码 |
+| P7 自动化测试 | 覆盖配置生成、阈值状态机、持久化、IAM、IoTDA、命令下发和 ntfy | 18 个自动化测试 | 已完成 |
+| P8 家庭安全补强 | 增加可配置的设备端燃气报警并区分声音；对实际 MQ-2 完成标定 | 本地燃气报警代码和标定记录 | 代码已完成，标定待完成 |
+| P9 系统联调 | 在住宅模拟环境中验证真实上报、现场蜂鸣、Web 展示、阈值和家人手机通知 | 端到端联调记录 | 进行中 |
+| P10 部署完善 | 配置开机启动、进程管理、HTTPS、备份、离线监测和运行告警 | 可长期运行的家庭部署 | 待完成 |
 
-如果你对项目中的代码或者文档存在疑问, 欢迎在Issues中提出你的问题(别忘了先在FAQ中看一看是否已经有答案了😎). 如果你自己解决了一个了不起的问题, 非常欢迎你把问题和解决方法发到Issues里, 如果你看到别人的问题而你正好有答案, 也欢迎你帮助解答其他人的问题, 所谓"授人玫瑰手有余香"嘛.
+建议后续按以下顺序推进：先消除设备 MQTT 鉴权和 NTP 的不稳定因素；再对 MQ-2 完成预热、清洁空气基线和受控条件标定，补齐设备端燃气蜂鸣报警；随后由家人和居住者共同进行一次端到端演练，确认现场声音可识别、手机通知可收到、处置步骤易理解；最后再部署 Web 服务并补充多设备、数据转发和远程配置能力。
 
+## 6. 测试方案与测试用例
 
+### 6.1 测试策略
 
-## 参与贡献
+- **单元测试**：验证配置校验、阈值状态机、持久化、云响应解析和通知请求；
+- **构建测试**：验证 Python、Node.js、TypeScript、Web 生产构建和 OpenHarmony 固件链接；
+- **接口测试**：验证 API 鉴权、状态查询、阈值修改、非法请求和 JSON 响应；
+- **集成测试**：使用真实开发板、IoTDA、浏览器和 ntfy 完成端到端验证；
+- **故障测试**：断开 Wi-Fi、使用错误凭据、停止 ntfy 或返回 401，验证恢复和重试行为。
+- **家庭场景测试**：分别模拟高温、低温、湿度异常、疑似燃气泄漏、断网和设备掉电，验证居住者现场提醒与家人远程通知是否形成闭环。
 
-我们非常欢迎你能对这个项目提出代码上的改进或扩展, 方法是:
-1.  Fork 本仓库
-2.  下载到本地, 修改, 提交
-3.  推送代码
-4.  在页面点击 Pull Request
+### 6.2 自动化测试用例
 
-这样我们就能接到你的推送申请.
+| 编号 | 对应需求 | 测试内容 | 预期结果 | 当前结果 |
+| --- | --- | --- | --- | --- |
+| UT-D01 | FR-12、NFR-01 | 使用合法占位配置生成固件头文件 | 正确转义字符串、不输出密码、权限为 0600 | 通过 |
+| UT-D02 | FR-12 | Client ID 属于另一设备 | 生成失败并提示 Device ID 不匹配 | 通过 |
+| UT-D03 | FR-12 | Client ID 含非法日期时间 | 生成失败并提示 UTC 时间戳非法 | 通过 |
+| UT-D04 | FR-12 | MQTT 密码不是 64 位十六进制 HMAC | 生成失败 | 通过 |
+| UT-D05 | FR-04、NFR-01 | 使用非 TLS 地址或错误端口 | 生成失败，要求 `ssl://host:8883` | 通过 |
+| UT-D06 | FR-05、FR-12 | 上报间隔越界或 CA 不是 PEM | 生成失败且不产生有效配置 | 通过 |
+| UT-D07 | FR-03、FR-12 | 生成标定后的本地燃气报警配置 | 生成启用标志及燃气上下限 | 通过 |
+| UT-D08 | FR-03、FR-12 | 本地上下限颠倒或燃气启用值非法 | 配置生成失败并给出明确原因 | 通过 |
+| UT-W01 | FR-09 | 越界、迟滞恢复、重复与乱序读数 | 只在状态变化时生成事件，乱序数据忽略 | 通过 |
+| UT-W02 | FR-08、NFR-04 | 过期数据和非法阈值修改 | 过期数据不报警；非法修改回滚 | 通过 |
+| UT-W03 | FR-08、FR-10、NFR-02 | 重启后加载阈值、状态和通知重试 | 数据完整恢复并继续按序重试 | 通过 |
+| UT-W04 | FR-06 | 自定义服务和属性映射 | 正确解析属性及华为云上报时间 | 通过 |
+| UT-W05 | FR-10 | ntfy UTF-8、令牌和失败响应 | 正确发送 JSON；HTTP 失败向上报告 | 通过 |
+| UT-W06 | FR-09、NFR-04 | 数值等于阈值及超过一分钟的未来数据 | 等于边界保持正常；未来数据拒绝 | 通过 |
+| UT-W07 | FR-06 | IAM Token 缓存及 IoTDA 401 | 有效期内复用；401 后重新获取 | 通过 |
+| UT-W08 | FR-06、NFR-04 | IoTDA 属性缺失或时间非法 | 返回明确错误，不写入数据库 | 通过 |
+| UT-W09 | FR-10、NFR-02 | 恢复事件遇到待重试告警 | 恢复事件不能越过原告警发送 | 通过 |
+| UT-W10 | FR-08 | Web 阈值转换为 IoTDA 同步命令 | 参数映射正确，设备确认后返回命令编号 | 通过 |
 
+运行设备端测试：
 
+```sh
+cd src/applications/environment_monitor/device/tools
+python3 -m unittest -v configure_device_test.py
+```
 
-## 最后的话
+运行 Web 测试与构建检查：
 
-OpenHarmony还是一个相当年轻的系统, 还在快速的发展中, 所以在这个过程中, 不可避免的你会遇到不少问题, 有些可能还是相当让人下头的那种:confounded:, 不过不要担心, 你可以多尝试几种方法去研究去解决, 也可以用搜索引擎搜索答案, 你当然也可以回到这里提出你的问题, 我们和其他小伙伴会尽力帮助你. 但最重要的是要记得: 所有那些让人仰望的技术大神, 其实都是从这样的阶段磨砺成长起来的. :rainbow:
+```sh
+cd src/applications/environment_monitor/web
+npm test
+npx tsc --noEmit
+npm run build
+```
 
-最后的最后, 欢迎来到OpenHarmony的世界探险!
+当前自动化结果为设备端 8/8、Web 端 10/10 通过，TypeScript 检查、Web 生产构建和启用云功能的 Hi3861 固件构建通过。
 
+### 6.3 手工与集成测试用例
 
+| 编号 | 前置条件 | 操作步骤 | 预期结果 | 状态 |
+| --- | --- | --- | --- | --- |
+| IT-01 传感器采集 | 传感器连接正确，固件已烧录 | 启动开发板并观察 OLED、串口 2 分钟 | 三项数据持续更新，ADC 日志合理，无崩溃 | 待完整记录 |
+| IT-02 云端上线 | Wi-Fi、CA、MQTT 三元组正确 | 重启开发板并查看串口和 IoTDA 设备状态 | 完成 NTP；显示 MQTT connected；设备在线 | 已部分验证，需复测稳定性 |
+| IT-03 属性上报 | IT-02 通过，产品模型一致 | 等待一个上报周期，查询设备影子 | `Environment` 三项属性和事件时间更新 | 待最终确认 |
+| IT-04 Web 查询 | 后端环境变量正确，设备已上报 | 启动 Web，输入正确管理令牌 | 页面显示最新读数、历史和已连接状态 | 待最终确认 |
+| IT-05 API 鉴权 | Web 后端运行 | 分别使用空、错误和正确令牌请求 `/api/status` | 前两者返回 401 JSON，正确令牌返回 200 JSON | 可执行接口检查 |
+| IT-06 远程高温告警 | Web、在线设备与 ntfy 可用，本人及家人手机已订阅 | 将 Web 温度上限临时调低至最新温度以下 | 设备确认新阈值并用于蜂鸣器，Web 产生一次 high 告警，目标手机收到 ntfy 推送 | 待端到端验证 |
+| IT-07 恢复通知 | IT-06 已产生告警 | 将阈值恢复，使读数跨过恢复缓冲 | 产生 normal 事件并收到恢复通知 | 待端到端验证 |
+| IT-08 ntfy 重试 | 已配置受控测试 Topic | 临时使用不可达 ntfy 地址触发告警，再恢复地址并重启 | 事件保留为待发送，恢复后按顺序补发 | 待验证 |
+| IT-09 Wi-Fi 断线恢复 | 设备已在线 | 关闭接入点 1 分钟后重新开启 | 本地采集不中断；网络恢复后 MQTT 自动重连 | 待验证 |
+| IT-10 错误 MQTT 密码 | 可恢复正确配置 | 烧录使用错误派生密码的测试固件 | 串口出现返回码 4，平台保持离线；恢复凭据后上线 | 已观察失败表现 |
+| IT-11 陈旧数据 | Web 已显示有效数据 | 关闭设备并等待超过 `STALE_SECONDS` | 页面保留最后读数并明确标为陈旧，不产生新告警 | 待验证 |
+| IT-12 重启持久化 | 已保存自定义阈值和告警 | 重启 Web 后端 | 阈值、状态、历史和待发事件仍存在 | 单元测试通过，待运行验证 |
+| IT-13 燃气现场报警 | MQ-2 已充分预热并完成安全标定，使用受控测试方法 | 启用本地燃气报警，让传感器读数越过标定后的阈值 | OLED 显示燃气异常，蜂鸣器连续三短声，手机收到通知 | 代码与构建通过，待标定后真机验证 |
+| IT-14 家庭处置演练 | 居住者、家人和备用联系人已约定流程 | 触发测试告警，记录各接收端到达时间并执行电话确认 | 居住者能识别现场提示；至少一名家人收到通知并完成确认；全过程不使用真实危险气体 | 待验证 |
+| IT-15 温湿度现场报警 | 固件已烧录，采用安全的传感器模拟或受控环境 | 使温度或湿度越过设备端固定阈值 | OLED 显示异常且蜂鸣器响起；断开网络后重复测试仍能报警 | 待验证 |
+| IT-16 异常立即上报 | 设备在线，普通上报周期为 30 秒 | 在两次周期上报之间使任一启用指标首次越界，记录串口、影子和 Web 时间 | 串口立即显示入队日志；异常样本在下一普通周期前到达 IoTDA；持续异常不高频上报 | 构建通过，待真机计时验证 |
 
-## 参考
+### 6.4 通过准则
 
-- [HarmonyOS物联网开发课程](https://developer.huawei.com/consumer/cn/training/course/mooc/C101641968823265204?refresh=1669428623989)
+在作为家庭辅助监测系统投入连续使用前，应满足：所有自动化测试通过；固件与 Web 生产构建成功；IT-01 至 IT-07、IT-09、IT-11 至 IT-15 在真实环境通过；家人确认手机通知渠道可用，居住者能够识别蜂鸣器含义；测试日志不包含 Wi-Fi 密码、MQTT 密码、IAM 密码、Token 或 DeviceSecret。对尚未通过的用例应记录环境、串口或 HTTP 错误、修复版本及复测结果。
 
+## 7. 项目总结
+
+项目已将原有环境监测 demo 整理为面向家庭看护的正式应用，形成“住宅现场采集与提醒—IoTDA 上报—家人远程查看—阈值判断—手机通知”的代码链路。它将行动不便者无需操作的现场提醒与家人远程关注结合起来：设备端保留 OLED 和蜂鸣器能力，并增加安全的 MQTTS、NTP 对时、断线重连、阈值持久化以及报警边沿优先上报；Web 端增加 IAM 鉴权、设备影子解析、SQLite 持久化、阈值迟滞、通知顺序与重试机制。
+
+工程质量方面，配置生成器可以在编译前发现多类常见错误和非法本地报警阈值，自动化测试覆盖 18 个关键场景，Web 类型检查、生产构建和启用云功能的 Hi3861 固件构建已经通过。测试使用占位凭据和临时数据库，不读取真实设备密码。
+
+当前主要风险位于真实环境联调与传感器标定。MQTT 返回码 4 表示设备认证参数不正确，Client ID 和 Password 必须使用当前 DeviceSecret 与同一时间戳成套生成；NTP 与网络连通性也会影响 TLS 建链。MQ-2 的本地和远程阈值能力已经具备，但未经标定不能据此断言发生泄漏。系统曾观察到设备激活或在线状态，仍需连续运行、传感器标定和家庭告警演练，才能把“代码及构建已验证”提升为“家庭场景链路已验证”。
+
+后续工作应优先完成 MQ-2 标定和报警边沿上报的真机计时验证，再使用 IoTDA 数据转发或应用侧订阅处理每一条上报，进一步降低设备影子轮询漏掉短暂异常的风险。面向更多家庭时，可继续支持多设备、房间分组、多个家人接收人和分级告警，并将 Web 服务部署到长期运行的主机，通过 HTTPS、开机启动、数据库备份和离线监控提高可用性。
